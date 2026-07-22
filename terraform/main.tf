@@ -1,8 +1,7 @@
-
 resource "azurerm_resource_group" "rg" {
 
-  name     = "rg-healthconnect-dev"
+  name = var.resource_group_name
 
-  location = "Central India"
+  location = var.location
 
 }
