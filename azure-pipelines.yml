@@ -1,0 +1,44 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  javaVersion: '17'
+
+steps:
+
+- checkout: self
+
+- task: JavaToolInstaller@0
+  displayName: 'Install Java 17'
+  inputs:
+    versionSpec: '$(javaVersion)'
+    jdkArchitectureOption: 'x64'
+    jdkSourceOption: 'PreInstalled'
+
+- task: Cache@2
+  displayName: 'Cache Maven Repository'
+  inputs:
+    key: 'maven | "$(Agent.OS)" | **/pom.xml'
+    restoreKeys: |
+      maven | "$(Agent.OS)"
+    path: $(HOME)/.m2/repository
+
+- script: |
+    cd app/healthconnect-api
+    chmod +x mvnw
+    ./mvnw clean verify
+  displayName: 'Build with Maven'
+
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish JAR Artifact'
+  inputs:
+    PathtoPublish: 'app/healthconnect-api/target'
+    ArtifactName: 'healthconnect-api'
