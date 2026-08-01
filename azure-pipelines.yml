@@ -1,19 +1,7 @@
-trigger:
-- main
+trigger: none
 
 pool:
   vmImage: ubuntu-latest
 
 steps:
-- checkout: self
-
-- script: |
-    cd app/healthconnect-api
-    chmod +x mvnw
-    ./mvnw clean verify
-  displayName: Build
-
-- task: PublishBuildArtifacts@1
-  inputs:
-    PathtoPublish: app/healthconnect-api/target
-    ArtifactName: healthconnect-api
+- script: echo "Hello Azure DevOps!"
