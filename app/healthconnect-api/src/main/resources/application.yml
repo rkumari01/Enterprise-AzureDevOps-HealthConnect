@@ -3,9 +3,9 @@ spring:
     name: healthconnect-api
 
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/healthconnectdb}
-    username: ${DB_USERNAME:healthadmin}
-    password: ${DB_PASSWORD:Health@123}
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
 
   liquibase:
     change-log: classpath:db/changelog/db.changelog-master.yaml
