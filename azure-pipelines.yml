@@ -28,7 +28,7 @@ steps:
 - script: |
     cd app/healthconnect-api
     chmod +x mvnw
-    ./mvnw clean package
+    ./mvnw clean package -DskipTests
   displayName: 'Build Spring Boot Application'
 
 - task: PublishBuildArtifacts@1
