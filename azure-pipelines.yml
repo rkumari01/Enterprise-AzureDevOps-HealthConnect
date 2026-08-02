@@ -47,6 +47,21 @@ steps:
       latest
       $(Build.BuildId)
 
+- task: AzureCLI@2
+  displayName: 'Push Image to Azure Container Registry'
+  inputs:
+    azureSubscription: '$(azureSubscription)'
+    scriptType: bash
+    scriptLocation: inlineScript
+    inlineScript: |
+      echo "Logging into Azure Container Registry..."
+
+      az acr login --name $(acrName)
+
+      docker tag healthconnect-api:latest $(acrLoginServer)/$(imageRepository):$(imageTag)
+
+      docker push $(acrLoginServer)/$(imageRepository):$(imageTag)
+
 - task: PublishBuildArtifacts@1
   displayName: 'Publish Build Artifact'
   inputs:
