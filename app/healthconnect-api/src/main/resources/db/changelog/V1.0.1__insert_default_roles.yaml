@@ -1,0 +1,45 @@
+databaseChangeLog:
+  - changeSet:
+      id: V1.0.1-insert-default-roles
+      author: Ritika
+
+      changes:
+        - insert:
+            tableName: roles
+            columns:
+              - column:
+                  name: role_name
+                  value: ADMIN
+              - column:
+                  name: description
+                  value: System Administrator
+
+        - insert:
+            tableName: roles
+            columns:
+              - column:
+                  name: role_name
+                  value: EMPLOYER
+              - column:
+                  name: description
+                  value: Employer Portal User
+
+        - insert:
+            tableName: roles
+            columns:
+              - column:
+                  name: role_name
+                  value: BROKER
+              - column:
+                  name: description
+                  value: Insurance Broker
+
+        - insert:
+            tableName: roles
+            columns:
+              - column:
+                  name: role_name
+                  value: MEMBER
+              - column:
+                  name: description
+                  value: Employee / Member

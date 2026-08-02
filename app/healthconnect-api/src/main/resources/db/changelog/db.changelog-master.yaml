@@ -1,0 +1,20 @@
+databaseChangeLog:
+  - include:
+      file: db/changelog/V1.0.0__create_roles_table.yaml
+  - include:
+      file: db/changelog/V1.0.1__insert_default_roles.yaml
+
+  - include:
+      file: db/changelog/V1.0.2__create_users_table.yaml
+  - include:
+      file: db/changelog/V1.0.3__create_employers_table.yaml
+  - include:
+     file: db/changelog/V1.0.4__create_enrollments_table.yaml
+  - include:
+      file: db/changelog/V1.0.5__create_claims_table.yaml
+  - include:
+      file: db/changelog/V1.0.6__create_benefits_table.yaml
+  - include:
+      file: db/changelog/V1.0.7__create_payments_table.yaml
+  - include:
+     file: db/changelog/V1.0.8__create_audit_logs_table.yaml
