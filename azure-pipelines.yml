@@ -7,6 +7,12 @@ pool:
 variables:
   javaVersion: '17'
 
+  azureSubscription: 'azure-healthconnect-sc'
+  acrName: 'ritikahealthconnectacr'
+  acrLoginServer: 'ritikahealthconnectacr.azurecr.io'
+  imageRepository: 'healthconnect-api'
+  imageTag: '$(Build.BuildId)'
+
 steps:
 - checkout: self
 
