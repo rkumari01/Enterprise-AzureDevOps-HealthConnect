@@ -31,6 +31,16 @@ steps:
     ./mvnw clean package -DskipTests
   displayName: 'Build Spring Boot Application'
 
+- task: Docker@2
+  displayName: 'Build Docker Image'
+  inputs:
+    command: 'build'
+    Dockerfile: 'app/healthconnect-api/Dockerfile'
+    repository: 'healthconnect-api'
+    tags: |
+      latest
+      $(Build.BuildId)
+
 - task: PublishBuildArtifacts@1
   displayName: 'Publish Build Artifact'
   inputs:
