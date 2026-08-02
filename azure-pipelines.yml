@@ -1,0 +1,38 @@
+trigger:
+  - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  javaVersion: '17'
+
+steps:
+- checkout: self
+
+- task: JavaToolInstaller@0
+  displayName: 'Install Java 17'
+  inputs:
+    versionSpec: '$(javaVersion)'
+    jdkArchitectureOption: 'x64'
+    jdkSourceOption: 'PreInstalled'
+
+- task: Cache@2
+  displayName: 'Cache Maven Repository'
+  inputs:
+    key: 'maven | "$(Agent.OS)" | app/healthconnect-api/pom.xml'
+    restoreKeys: |
+      maven | "$(Agent.OS)"
+    path: $(HOME)/.m2/repository
+
+- script: |
+    cd app/healthconnect-api
+    chmod +x mvnw
+    ./mvnw clean package
+  displayName: 'Build Spring Boot Application'
+
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish Build Artifact'
+  inputs:
+    PathtoPublish: 'app/healthconnect-api/target'
+    ArtifactName: 'healthconnect-api'
