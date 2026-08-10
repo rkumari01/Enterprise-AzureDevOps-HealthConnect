@@ -1,0 +1,279 @@
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  javaVersion: '17'
+
+  azureSubscription: 'azure-healthconnect-sc'
+
+  acrName: 'ritikahealthconnectacr'
+  acrLoginServer: 'ritikahealthconnectacr.azurecr.io'
+
+  imageRepository: 'healthconnect-api'
+  imageTag: '$(Build.BuildId)'
+
+  trivyVersion: '0.58.1'
+
+stages:
+
+# ============================================================
+# BUILD STAGE
+# ============================================================
+
+- stage: Build
+  displayName: 'Build Stage'
+
+  jobs:
+  - job: BuildJob
+    displayName: 'Compile Spring Boot Application'
+
+    steps:
+
+    - checkout: self
+
+    - task: JavaToolInstaller@0
+      displayName: 'Install Java 17'
+      inputs:
+        versionSpec: '$(javaVersion)'
+        jdkArchitectureOption: 'x64'
+        jdkSourceOption: 'PreInstalled'
+
+    - task: Cache@2
+      displayName: 'Cache Maven Repository'
+      inputs:
+        key: 'maven | "$(Agent.OS)" | app/healthconnect-api/pom.xml'
+        restoreKeys: |
+          maven | "$(Agent.OS)"
+        path: $(HOME)/.m2/repository
+
+    - script: |
+        cd app/healthconnect-api
+        chmod +x mvnw
+        ./mvnw clean compile
+      displayName: 'Compile Application'
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Build Artifact'
+      inputs:
+        targetPath: 'app/healthconnect-api/target'
+        artifact: 'spring-build'
+
+
+# ============================================================
+# TEST STAGE
+# ============================================================
+
+- stage: Test
+  displayName: 'Test Stage'
+
+  dependsOn: Build
+
+  jobs:
+  - job: TestJob
+    displayName: 'Run Unit and Integration Tests'
+
+    steps:
+
+    - checkout: self
+
+    - task: JavaToolInstaller@0
+      displayName: 'Install Java 17'
+      inputs:
+        versionSpec: '$(javaVersion)'
+        jdkArchitectureOption: 'x64'
+        jdkSourceOption: 'PreInstalled'
+
+    - task: Cache@2
+      displayName: 'Cache Maven Repository'
+      inputs:
+        key: 'maven | "$(Agent.OS)" | app/healthconnect-api/pom.xml'
+        restoreKeys: |
+          maven | "$(Agent.OS)"
+        path: $(HOME)/.m2/repository
+
+    - script: |
+        cd app/healthconnect-api
+        chmod +x mvnw
+        ./mvnw clean verify
+      displayName: 'Run Unit and Integration Tests'
+
+    - task: PublishTestResults@2
+      displayName: 'Publish JUnit Test Results'
+      condition: succeededOrFailed()
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/surefire-reports/TEST-*.xml'
+        failTaskOnFailedTests: true
+        testRunTitle: 'HealthConnect Test Results'
+
+    - task: PublishCodeCoverageResults@2
+      displayName: 'Publish JaCoCo Coverage'
+      condition: succeededOrFailed()
+      inputs:
+        codeCoverageTool: 'JaCoCo'
+        summaryFileLocation: 'app/healthconnect-api/target/site/jacoco/jacoco.xml'
+        reportDirectory: 'app/healthconnect-api/target/site/jacoco'
+
+
+# ============================================================
+# DOCKER BUILD STAGE
+# ============================================================
+
+- stage: Docker
+  displayName: 'Docker Build Stage'
+
+  dependsOn: Test
+
+  jobs:
+  - job: DockerJob
+    displayName: 'Build and Package Docker Image'
+
+    steps:
+
+    - checkout: self
+
+    - task: Docker@2
+      displayName: 'Build Docker Image'
+      inputs:
+        command: 'build'
+        Dockerfile: 'app/healthconnect-api/Dockerfile'
+        repository: 'healthconnect-api'
+        tags: |
+          latest
+          $(Build.BuildId)
+
+    # Save Docker image so it can be transferred
+    # to the next Azure DevOps agent.
+    - script: |
+        docker save healthconnect-api:latest | gzip > $(Build.ArtifactStagingDirectory)/healthconnect-api.tar.gz
+      displayName: 'Save Docker Image'
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Docker Image Artifact'
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/healthconnect-api.tar.gz'
+        artifact: 'docker-image'
+
+
+# ============================================================
+# SECURITY / TRIVY STAGE
+# ============================================================
+
+- stage: Security
+  displayName: 'Security Scan'
+
+  dependsOn: Docker
+
+  jobs:
+  - job: TrivyScan
+    displayName: 'Scan Docker Image with Trivy'
+
+    steps:
+
+    - checkout: none
+
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download Docker Image'
+      inputs:
+        artifact: 'docker-image'
+        path: '$(Pipeline.Workspace)/docker-image'
+
+    - script: |
+        gunzip -c $(Pipeline.Workspace)/docker-image/healthconnect-api.tar.gz | docker load
+      displayName: 'Load Docker Image'
+
+    - script: |
+        sudo apt-get update
+        sudo apt-get install -y wget
+
+        wget -q \
+          https://github.com/aquasecurity/trivy/releases/download/v$(trivyVersion)/trivy_$(trivyVersion)_Linux-64bit.deb
+
+        sudo dpkg -i trivy_$(trivyVersion)_Linux-64bit.deb
+      displayName: 'Install Trivy'
+
+    - script: |
+        trivy image \
+          --scanners vuln \
+          --severity HIGH,CRITICAL \
+          --exit-code 1 \
+          healthconnect-api:latest
+      displayName: 'Scan Docker Image'
+
+
+# ============================================================
+# PUSH IMAGE TO ACR
+# ============================================================
+
+- stage: PushImage
+  displayName: 'Push Image to Azure Container Registry'
+
+  dependsOn: Security
+
+  jobs:
+  - job: PushJob
+    displayName: 'Push Docker Image to ACR'
+
+    steps:
+
+    - checkout: none
+
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download Docker Image'
+      inputs:
+        artifact: 'docker-image'
+        path: '$(Pipeline.Workspace)/docker-image'
+
+    - script: |
+        gunzip -c $(Pipeline.Workspace)/docker-image/healthconnect-api.tar.gz | docker load
+      displayName: 'Load Docker Image'
+
+    - task: AzureCLI@2
+      displayName: 'Login to Azure Container Registry'
+      inputs:
+        azureSubscription: '$(azureSubscription)'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az acr login --name $(acrName)
+
+    - script: |
+        docker tag healthconnect-api:latest \
+          $(acrLoginServer)/$(imageRepository):$(imageTag)
+
+        docker push \
+          $(acrLoginServer)/$(imageRepository):$(imageTag)
+      displayName: 'Push Image to ACR'
+
+
+# ============================================================
+# DEPLOY STAGE
+# ============================================================
+
+- stage: Deploy
+  displayName: 'Deploy to Azure App Service'
+
+  dependsOn: PushImage
+
+  jobs:
+  - deployment: DeployWebApp
+    displayName: 'Deploy HealthConnect'
+
+    environment: 'healthconnect-dev'
+
+    strategy:
+      runOnce:
+        deploy:
+
+          steps:
+
+          - task: AzureWebAppContainer@1
+            displayName: 'Deploy Docker Image to App Service'
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              appName: 'healthconnect-ritika'
+              containers: |
+                $(acrLoginServer)/$(imageRepository):$(imageTag)
