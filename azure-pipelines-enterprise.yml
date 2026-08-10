@@ -173,13 +173,23 @@ stages:
 
     steps:
 
-    - script: |
-        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin v$(trivyVersion)
-        trivy --version
-      displayName: "Install Trivy"
+    - checkout: self
 
     - script: |
-        trivy image \
+        echo "Pulling Trivy scanner..."
+        docker pull aquasec/trivy:$(trivyVersion)
+
+        echo "Trivy version:"
+        docker run --rm aquasec/trivy:$(trivyVersion) --version
+      displayName: "Prepare Trivy"
+
+    - script: |
+        echo "Scanning HealthConnect Docker image..."
+
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          aquasec/trivy:$(trivyVersion) \
+          image \
           --severity HIGH,CRITICAL \
           --exit-code 1 \
           healthconnect-api:latest
