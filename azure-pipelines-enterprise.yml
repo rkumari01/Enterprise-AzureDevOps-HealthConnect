@@ -118,45 +118,45 @@ stages:
         reportDirectory: 'app/healthconnect-api/target/site/jacoco'
 
 
-# ============================================================
-# DOCKER BUILD STAGE
-# ============================================================
+# ===========================================
+# DOCKER STAGE
+# ===========================================
 
 - stage: Docker
-  displayName: 'Docker Build Stage'
+  displayName: "Docker Stage"
 
   dependsOn: Test
 
   jobs:
   - job: DockerJob
-    displayName: 'Build and Package Docker Image'
+    displayName: "Build Docker Image"
 
     steps:
-
     - checkout: self
 
     - task: Docker@2
-      displayName: 'Build Docker Image'
+      displayName: "Build Docker Image"
       inputs:
-        command: 'build'
-        Dockerfile: 'app/healthconnect-api/Dockerfile'
-        repository: 'healthconnect-api'
+        command: build
+        Dockerfile: app/healthconnect-api/Dockerfile
+        repository: healthconnect-api
         tags: |
           latest
           $(Build.BuildId)
 
-    # Save Docker image so it can be transferred
-    # to the next Azure DevOps agent.
     - script: |
-        docker save healthconnect-api:latest | gzip > $(Build.ArtifactStagingDirectory)/healthconnect-api.tar.gz
-      displayName: 'Save Docker Image'
+        echo "Saving Docker image..."
+        docker save healthconnect-api:latest \
+          -o $(Build.ArtifactStagingDirectory)/healthconnect-api.tar
+
+        ls -lh $(Build.ArtifactStagingDirectory)/healthconnect-api.tar
+      displayName: "Save Docker Image"
 
     - task: PublishPipelineArtifact@1
-      displayName: 'Publish Docker Image Artifact'
+      displayName: "Publish Docker Image Artifact"
       inputs:
-        targetPath: '$(Build.ArtifactStagingDirectory)/healthconnect-api.tar.gz'
+        targetPath: '$(Build.ArtifactStagingDirectory)/healthconnect-api.tar'
         artifact: 'docker-image'
-
 
 # ===========================================
 # SECURITY STAGE
@@ -173,14 +173,35 @@ stages:
 
     steps:
 
-    - checkout: self
+    - task: DownloadPipelineArtifact@2
+      displayName: "Download Docker Image"
+      inputs:
+        buildType: 'current'
+        artifactName: 'docker-image'
+        targetPath: '$(Pipeline.Workspace)/docker-image'
+
+    - script: |
+        echo "Loading Docker image..."
+
+        docker load \
+          -i $(Pipeline.Workspace)/docker-image/healthconnect-api.tar
+
+        echo "Available Docker images:"
+        docker images
+
+        echo "Verifying image..."
+        docker image inspect healthconnect-api:latest
+      displayName: "Load Docker Image"
 
     - script: |
         echo "Pulling Trivy scanner..."
+
         docker pull aquasec/trivy:$(trivyVersion)
 
         echo "Trivy version:"
-        docker run --rm aquasec/trivy:$(trivyVersion) --version
+        docker run --rm \
+          aquasec/trivy:$(trivyVersion) \
+          --version
       displayName: "Prepare Trivy"
 
     - script: |
@@ -194,7 +215,6 @@ stages:
           --exit-code 1 \
           healthconnect-api:latest
       displayName: "Scan Docker Image"
-
 # ============================================================
 # PUSH IMAGE TO ACR
 # ============================================================
