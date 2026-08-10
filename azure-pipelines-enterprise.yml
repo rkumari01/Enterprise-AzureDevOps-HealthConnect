@@ -363,31 +363,63 @@ stages:
       displayName: 'Push Image to ACR'
 
 
-# ============================================================
-# STAGE 6 - DEPLOY
-# ============================================================
+# ===========================================
+# DEV DEPLOYMENT
+# ===========================================
 
-- stage: Deploy
-  displayName: 'Deploy to Azure App Service'
+- stage: DeployDev
+  displayName: "Deploy to Dev"
 
   dependsOn: PushImage
 
+  condition: succeeded()
+
   jobs:
+  - deployment: DeployDevWebApp
+    displayName: "Deploy HealthConnect to Dev"
 
-  - deployment: DeployWebApp
-    displayName: 'Deploy HealthConnect'
-
-    environment: 'healthconnect-dev'
+    environment: healthconnect-dev
 
     strategy:
       runOnce:
         deploy:
-
           steps:
 
           - task: AzureWebAppContainer@1
-            displayName: 'Deploy Docker Image'
+            displayName: "Deploy Docker Image to Dev"
             inputs:
               azureSubscription: '$(azureSubscription)'
               appName: 'healthconnect-ritika'
-              containers: '$(acrLoginServer)/$(imageRepository):$(imageTag)'
+              containers: |
+                $(acrLoginServer)/$(imageRepository):$(imageTag)
+
+
+# ===========================================
+# PRODUCTION DEPLOYMENT
+# ===========================================
+
+- stage: DeployProd
+  displayName: "Deploy to Production"
+
+  dependsOn: DeployDev
+
+  condition: succeeded()
+
+  jobs:
+  - deployment: DeployProdWebApp
+    displayName: "Deploy HealthConnect to Production"
+
+    environment: healthconnect-prod
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - task: AzureWebAppContainer@1
+            displayName: "Deploy Docker Image to Production"
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              appName: 'healthconnect-prod-ritika'
+              containers: |
+                $(acrLoginServer)/$(imageRepository):$(imageTag)
