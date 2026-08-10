@@ -158,51 +158,32 @@ stages:
         artifact: 'docker-image'
 
 
-# ============================================================
-# SECURITY / TRIVY STAGE
-# ============================================================
+# ===========================================
+# SECURITY STAGE
+# ===========================================
 
 - stage: Security
-  displayName: 'Security Scan'
+  displayName: "Security Scan"
 
   dependsOn: Docker
 
   jobs:
   - job: TrivyScan
-    displayName: 'Scan Docker Image with Trivy'
+    displayName: "Scan Docker Image"
 
     steps:
 
-    - checkout: none
-
-    - task: DownloadPipelineArtifact@2
-      displayName: 'Download Docker Image'
-      inputs:
-        artifact: 'docker-image'
-        path: '$(Pipeline.Workspace)/docker-image'
-
     - script: |
-        gunzip -c $(Pipeline.Workspace)/docker-image/healthconnect-api.tar.gz | docker load
-      displayName: 'Load Docker Image'
-
-    - script: |
-        sudo apt-get update
-        sudo apt-get install -y wget
-
-        wget -q \
-          https://github.com/aquasecurity/trivy/releases/download/v$(trivyVersion)/trivy_$(trivyVersion)_Linux-64bit.deb
-
-        sudo dpkg -i trivy_$(trivyVersion)_Linux-64bit.deb
-      displayName: 'Install Trivy'
+        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin v$(trivyVersion)
+        trivy --version
+      displayName: "Install Trivy"
 
     - script: |
         trivy image \
-          --scanners vuln \
           --severity HIGH,CRITICAL \
           --exit-code 1 \
           healthconnect-api:latest
-      displayName: 'Scan Docker Image'
-
+      displayName: "Scan Docker Image"
 
 # ============================================================
 # PUSH IMAGE TO ACR
