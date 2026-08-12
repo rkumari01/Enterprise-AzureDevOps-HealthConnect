@@ -321,30 +321,31 @@ stages:
 
 
 # ============================================================
-# STAGE 6 - DEPLOY TO AKS USING HELM
+# STAGE 6 - BLUE-GREEN DEPLOYMENT
 # ============================================================
 
 - stage: Deploy
-  displayName: 'Deploy to AKS using Helm'
-
+  displayName: 'Blue-Green Deployment to AKS'
   dependsOn: PushImage
 
   jobs:
 
-  - deployment: DeployAKS
-    displayName: 'Deploy HealthConnect to AKS'
+  - deployment: DeployGreen
+    displayName: 'Deploy Green Environment'
 
     environment: 'healthconnect-aks'
 
     strategy:
-
       runOnce:
-
         deploy:
 
           steps:
 
           - checkout: self
+
+          # ------------------------------------------------
+          # Get AKS credentials
+          # ------------------------------------------------
 
           - task: AzureCLI@2
             displayName: 'Get AKS Credentials'
@@ -354,106 +355,301 @@ stages:
               scriptLocation: 'inlineScript'
               inlineScript: |
 
-                echo "Azure subscription:"
-                az account show
-
-                echo "Getting AKS credentials..."
-
                 az aks get-credentials \
                   --resource-group "$(aksResourceGroup)" \
                   --name "$(aksClusterName)" \
                   --overwrite-existing
 
-                echo "AKS nodes:"
-
                 kubectl get nodes
 
-          - script: |
-              echo "Helm version:"
-              helm version
 
-              echo ""
-              echo "Helm chart:"
-              helm lint "$(helmChartPath)"
-            displayName: 'Validate Helm Chart'
+          # ------------------------------------------------
+          # Deploy NEW GREEN version
+          # ------------------------------------------------
 
           - task: AzureCLI@2
-            displayName: 'Deploy Helm Release'
+            displayName: 'Deploy Green'
             inputs:
               azureSubscription: '$(azureSubscription)'
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
               inlineScript: |
 
-                echo "Deploying image:"
-                echo "$(acrLoginServer)/$(imageRepository):$(imageTag)"
+                GREEN_NAME="healthconnect-api-green-$(Build.BuildId)"
 
-                helm upgrade --install "$(helmReleaseName)" \
-                  "$(helmChartPath)" \
-                  --namespace "$(kubernetesNamespace)" \
-                  --create-namespace \
-                  --set image.repository="$(acrLoginServer)/$(imageRepository)" \
-                  --set image.tag="$(imageTag)"
+                echo "Green deployment: $GREEN_NAME"
+                echo "Image: $(acrLoginServer)/$(imageRepository):$(imageTag)"
 
-                echo ""
-                echo "Helm releases:"
+                cat > green-deployment.yaml <<EOF
+                apiVersion: apps/v1
+                kind: Deployment
+                metadata:
+                  name: ${GREEN_NAME}
+                  namespace: $(kubernetesNamespace)
+                  labels:
+                    app.kubernetes.io/name: healthconnect
+                    app.kubernetes.io/instance: healthconnect-green
+                    deployment-color: green
+                    deployment-version: "$(Build.BuildId)"
+                spec:
+                  replicas: 2
+                  strategy:
+                    type: RollingUpdate
+                    rollingUpdate:
+                      maxUnavailable: 0
+                      maxSurge: 1
+                  selector:
+                    matchLabels:
+                      app.kubernetes.io/name: healthconnect
+                      app.kubernetes.io/instance: healthconnect-green
+                      deployment-version: "$(Build.BuildId)"
+                  template:
+                    metadata:
+                      labels:
+                        app.kubernetes.io/name: healthconnect
+                        app.kubernetes.io/instance: healthconnect-green
+                        deployment-color: green
+                        deployment-version: "$(Build.BuildId)"
+                    spec:
+                      containers:
+                      - name: healthconnect-api
+                        image: $(acrLoginServer)/$(imageRepository):$(imageTag)
+                        imagePullPolicy: IfNotPresent
+                        ports:
+                        - name: http
+                          containerPort: 8080
+                          protocol: TCP
+                        env:
+                        - name: DB_URL
+                          value: jdbc:postgresql://healthconnect-postgres:5432/healthconnect
+                        - name: DB_USERNAME
+                          valueFrom:
+                            secretKeyRef:
+                              name: postgres-secret
+                              key: POSTGRES_USER
+                        - name: DB_PASSWORD
+                          valueFrom:
+                            secretKeyRef:
+                              name: postgres-secret
+                              key: POSTGRES_PASSWORD
+                        resources:
+                          requests:
+                            cpu: 100m
+                            memory: 256Mi
+                          limits:
+                            cpu: 500m
+                            memory: 512Mi
+                        readinessProbe:
+                          httpGet:
+                            path: /actuator/health
+                            port: 8080
+                          initialDelaySeconds: 30
+                          periodSeconds: 10
+                        livenessProbe:
+                          httpGet:
+                            path: /actuator/health
+                            port: 8080
+                          initialDelaySeconds: 60
+                          periodSeconds: 20
+                EOF
 
-                helm list \
-                  --namespace "$(kubernetesNamespace)"
-
-          - task: AzureCLI@2
-            displayName: 'Verify AKS Rollout'
-            inputs:
-              azureSubscription: '$(azureSubscription)'
-              scriptType: 'bash'
-              scriptLocation: 'inlineScript'
-              inlineScript: |
-
-                echo "Waiting for deployment rollout..."
+                kubectl apply -f green-deployment.yaml
 
                 kubectl rollout status \
-                  deployment/healthconnect-api \
+                  deployment/${GREEN_NAME} \
                   --namespace "$(kubernetesNamespace)" \
                   --timeout=5m
 
                 echo ""
-                echo "Pods:"
-
-                kubectl get pods \
+                echo "Green deployment:"
+                kubectl get deployment ${GREEN_NAME} \
                   --namespace "$(kubernetesNamespace)"
 
                 echo ""
-                echo "Services:"
+                echo "Green pods:"
+                kubectl get pods \
+                  --namespace "$(kubernetesNamespace)" \
+                  -l deployment-version="$(Build.BuildId)"
 
-                kubectl get svc \
+
+          # ------------------------------------------------
+          # Create temporary Green service
+          # ------------------------------------------------
+
+          - task: AzureCLI@2
+            displayName: 'Validate Green Environment'
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+
+                GREEN_NAME="healthconnect-api-green-$(Build.BuildId)"
+
+                cat > green-service.yaml <<EOF
+                apiVersion: v1
+                kind: Service
+                metadata:
+                  name: ${GREEN_NAME}-svc
+                  namespace: $(kubernetesNamespace)
+                spec:
+                  type: ClusterIP
+                  selector:
+                    app.kubernetes.io/name: healthconnect
+                    app.kubernetes.io/instance: healthconnect-green
+                    deployment-version: "$(Build.BuildId)"
+                  ports:
+                  - protocol: TCP
+                    port: 80
+                    targetPort: 8080
+                EOF
+
+                kubectl apply -f green-service.yaml
+
+                echo "Testing Green internally..."
+
+                kubectl run green-health-check-$(Build.BuildId) \
+                  --namespace "$(kubernetesNamespace)" \
+                  --rm \
+                  -i \
+                  --restart=Never \
+                  --image=curlimages/curl \
+                  -- \
+                  curl -f \
+                  "http://${GREEN_NAME}-svc.$(kubernetesNamespace).svc.cluster.local/actuator/health"
+
+                echo ""
+                echo "GREEN INTERNAL HEALTH CHECK PASSED."
+
+
+          # ------------------------------------------------
+          # Switch production traffic to GREEN
+          # ------------------------------------------------
+
+          - task: AzureCLI@2
+            displayName: 'Switch Traffic to Green'
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+
+                echo "Switching production traffic to GREEN..."
+
+                kubectl patch service healthconnect-api \
+                  --namespace "$(kubernetesNamespace)" \
+                  --type merge \
+                  -p '{
+                    "spec": {
+                      "selector": {
+                        "app.kubernetes.io/name": "healthconnect",
+                        "app.kubernetes.io/instance": "healthconnect-green",
+                        "deployment-version": "$(Build.BuildId)"
+                      }
+                    }
+                  }'
+
+                echo ""
+                echo "Production Service now points to GREEN."
+
+                kubectl get service healthconnect-api \
+                  --namespace "$(kubernetesNamespace)"
+
+                echo ""
+                echo "Production endpoints:"
+                kubectl get endpoints healthconnect-api \
                   --namespace "$(kubernetesNamespace)"
 
 
+          # ------------------------------------------------
+          # Public smoke test + automatic rollback
+          # ------------------------------------------------
+
+          - task: AzureCLI@2
+            displayName: 'Smoke Test and Automatic Rollback'
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+
+                echo "Waiting for LoadBalancer..."
+
+                sleep 15
+
+                PUBLIC_IP=$(kubectl get service healthconnect-api \
+                  --namespace "$(kubernetesNamespace)" \
+                  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+                echo "Public IP: $PUBLIC_IP"
+
+                echo ""
+                echo "Running production health check..."
+
+                if curl -f \
+                  --retry 5 \
+                  --retry-delay 5 \
+                  "http://$PUBLIC_IP/actuator/health"
+                then
+
+                  echo ""
+                  echo "======================================"
+                  echo " GREEN DEPLOYMENT SUCCESSFUL"
+                  echo " Production traffic is on GREEN"
+                  echo "======================================"
+
+                else
+
+                  echo ""
+                  echo "======================================"
+                  echo " GREEN HEALTH CHECK FAILED"
+                  echo " ROLLING BACK TO BLUE"
+                  echo "======================================"
+
+                  kubectl patch service healthconnect-api \
+                    --namespace "$(kubernetesNamespace)" \
+                    --type merge \
+                    -p '{
+                      "spec": {
+                        "selector": {
+                          "app.kubernetes.io/name": "healthconnect",
+                          "app.kubernetes.io/instance": "healthconnect"
+                        }
+                      }
+                    }'
+
+                  echo "Traffic switched back to BLUE."
+
+                  kubectl get endpoints healthconnect-api \
+                    --namespace "$(kubernetesNamespace)"
+
+                  exit 1
+
+                fi
+
+
 # ============================================================
-# STAGE 7 - APPLICATION HEALTH CHECK
+# STAGE 7 - DEPLOYMENT VERIFICATION
 # ============================================================
 
 - stage: Verify
-  displayName: 'Verify Application Health'
-
+  displayName: 'Verify Blue-Green Deployment'
   dependsOn: Deploy
 
   jobs:
 
-  - job: HealthCheck
-    displayName: 'Health Check'
+  - job: VerifyDeployment
+    displayName: 'Verify Production'
 
     steps:
 
     - task: AzureCLI@2
-      displayName: 'Run Health Check'
+      displayName: 'Verify Production Deployment'
       inputs:
         azureSubscription: '$(azureSubscription)'
         scriptType: 'bash'
         scriptLocation: 'inlineScript'
         inlineScript: |
-
-          echo "Getting AKS credentials..."
 
           az aks get-credentials \
             --resource-group "$(aksResourceGroup)" \
@@ -461,28 +657,52 @@ stages:
             --overwrite-existing
 
           echo ""
-          echo "Deployment status:"
+          echo "======================================"
+          echo " PRODUCTION DEPLOYMENT"
+          echo "======================================"
 
           kubectl get deployment healthconnect-api \
             --namespace "$(kubernetesNamespace)"
 
           echo ""
-          echo "Pod status:"
+          echo "=== BLUE PODS ==="
 
           kubectl get pods \
+            --namespace "$(kubernetesNamespace)" \
+            -l app.kubernetes.io/instance=healthconnect
+
+          echo ""
+          echo "=== GREEN PODS ==="
+
+          kubectl get pods \
+            --namespace "$(kubernetesNamespace)" \
+            -l app.kubernetes.io/instance=healthconnect-green
+
+          echo ""
+          echo "=== PRODUCTION SERVICE ==="
+
+          kubectl get service healthconnect-api \
             --namespace "$(kubernetesNamespace)"
 
           echo ""
-          echo "Running application health check..."
+          echo "=== PRODUCTION ENDPOINTS ==="
 
-          kubectl run pipeline-health-check \
-            --rm \
-            -i \
-            --restart=Never \
-            --image=curlimages/curl \
-            -- \
-            curl -f \
-            http://healthconnect-api.$(kubernetesNamespace).svc.cluster.local/actuator/health
+          kubectl get endpoints healthconnect-api \
+            --namespace "$(kubernetesNamespace)"
 
           echo ""
-          echo "Health check completed successfully."
+          echo "=== FINAL HEALTH CHECK ==="
+
+          PUBLIC_IP=$(kubectl get service healthconnect-api \
+            --namespace "$(kubernetesNamespace)" \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+          curl -f \
+            --retry 5 \
+            --retry-delay 5 \
+            "http://$PUBLIC_IP/actuator/health"
+
+          echo ""
+          echo "======================================"
+          echo " BLUE-GREEN VERIFICATION SUCCESSFUL"
+          echo "======================================"
