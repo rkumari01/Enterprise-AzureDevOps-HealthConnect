@@ -1,0 +1,25 @@
+replicaCount: 2
+
+fullnameOverride: healthconnect-api
+
+image:
+  repository: ritikahealthconnectacr.azurecr.io/healthconnect-api
+  tag: "28"
+  pullPolicy: IfNotPresent
+
+service:
+  type: LoadBalancer
+  port: 80
+  targetPort: 8080
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+healthCheck:
+  path: /actuator/health
+  port: 8080
