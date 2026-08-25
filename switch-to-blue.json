@@ -1,0 +1,8 @@
+{
+  "spec": {
+    "selector": {
+      "app.kubernetes.io/instance": "healthconnect",
+      "app.kubernetes.io/name": "healthconnect"
+    }
+  }
+}

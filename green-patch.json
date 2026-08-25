@@ -1,0 +1,12 @@
+{
+  "spec": {
+    "template": {
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/name": "healthconnect",
+          "app.kubernetes.io/instance": "healthconnect-green"
+        }
+      }
+    }
+  }
+}

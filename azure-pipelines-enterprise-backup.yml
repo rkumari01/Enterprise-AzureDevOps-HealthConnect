@@ -1,0 +1,488 @@
+trigger:
+  - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  # Azure DevOps service connection
+  azureSubscription: 'HealthConnect-Azure'
+
+  # Azure Container Registry
+  acrName: 'ritikahealthconnectacr'
+  acrLoginServer: 'ritikahealthconnectacr.azurecr.io'
+
+  # Docker image
+  imageRepository: 'healthconnect-api'
+  imageTag: '$(Build.BuildId)'
+
+  # Java
+  javaVersion: '17'
+
+  # Security scanning
+  trivyVersion: '0.58.1'
+
+  # AKS
+  aksResourceGroup: 'rg-healthconnect-acr'
+  aksClusterName: 'aks-healthconnect-ritika'
+  kubernetesNamespace: 'healthconnect'
+
+  # Helm
+  helmReleaseName: 'healthconnect'
+  helmChartPath: 'kubernetes/helm/healthconnect'
+
+
+# ============================================================
+# STAGE 1 - BUILD
+# ============================================================
+
+stages:
+
+- stage: Build
+  displayName: 'Build Stage'
+
+  jobs:
+
+  - job: BuildJob
+    displayName: 'Compile Spring Boot Application'
+
+    steps:
+
+    - checkout: self
+
+    - task: JavaToolInstaller@0
+      displayName: 'Install Java 17'
+      inputs:
+        versionSpec: '$(javaVersion)'
+        jdkArchitectureOption: 'x64'
+        jdkSourceOption: 'PreInstalled'
+
+    - task: Cache@2
+      displayName: 'Restore Maven Cache'
+      inputs:
+        key: 'maven | "$(Agent.OS)" | app/healthconnect-api/pom.xml'
+        restoreKeys: |
+          maven | "$(Agent.OS)"
+        path: $(HOME)/.m2/repository
+
+    - script: |
+        cd app/healthconnect-api
+        chmod +x mvnw
+        ./mvnw clean compile
+      displayName: 'Compile Application'
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Build Artifact'
+      inputs:
+        PathtoPublish: 'app/healthconnect-api/target'
+        ArtifactName: 'spring-build'
+
+
+# ============================================================
+# STAGE 2 - TEST
+# ============================================================
+
+- stage: Test
+  displayName: 'Test Stage'
+
+  dependsOn: Build
+
+  jobs:
+
+  - job: TestJob
+    displayName: 'Run Unit and Integration Tests'
+
+    steps:
+
+    - checkout: self
+
+    - task: JavaToolInstaller@0
+      displayName: 'Install Java 17'
+      inputs:
+        versionSpec: '$(javaVersion)'
+        jdkArchitectureOption: 'x64'
+        jdkSourceOption: 'PreInstalled'
+
+    - task: Cache@2
+      displayName: 'Restore Maven Cache'
+      inputs:
+        key: 'maven | "$(Agent.OS)" | app/healthconnect-api/pom.xml'
+        restoreKeys: |
+          maven | "$(Agent.OS)"
+        path: $(HOME)/.m2/repository
+
+    - script: |
+        cd app/healthconnect-api
+        chmod +x mvnw
+        ./mvnw clean verify
+      displayName: 'Run Unit and Integration Tests'
+
+    - task: PublishTestResults@2
+      displayName: 'Publish JUnit Test Results'
+      condition: succeededOrFailed()
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/surefire-reports/TEST-*.xml'
+        failTaskOnFailedTests: true
+        testRunTitle: 'HealthConnect Test Results'
+
+    - task: PublishCodeCoverageResults@2
+      displayName: 'Publish JaCoCo Coverage'
+      condition: succeededOrFailed()
+      inputs:
+        codeCoverageTool: 'JaCoCo'
+        summaryFileLocation: 'app/healthconnect-api/target/site/jacoco/jacoco.xml'
+        reportDirectory: 'app/healthconnect-api/target/site/jacoco'
+
+
+# ============================================================
+# STAGE 3 - DOCKER BUILD
+# ============================================================
+
+- stage: Docker
+  displayName: 'Docker Build Stage'
+
+  dependsOn: Test
+
+  jobs:
+
+  - job: DockerJob
+    displayName: 'Build Docker Image'
+
+    steps:
+
+    - checkout: self
+
+    - task: Docker@2
+      displayName: 'Build Docker Image'
+      inputs:
+        command: 'build'
+        Dockerfile: 'app/healthconnect-api/Dockerfile'
+        repository: 'healthconnect-api'
+        tags: |
+          latest
+          $(Build.BuildId)
+
+    - script: |
+        echo "Creating Docker image artifact directory..."
+
+        mkdir -p "$(Build.ArtifactStagingDirectory)/docker-image"
+
+        echo "Saving Docker image..."
+
+        docker save healthconnect-api:latest \
+          -o "$(Build.ArtifactStagingDirectory)/docker-image/healthconnect-api.tar"
+
+        echo "Docker image saved:"
+        ls -lh "$(Build.ArtifactStagingDirectory)/docker-image/healthconnect-api.tar"
+      displayName: 'Save Docker Image'
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Docker Image Artifact'
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/docker-image'
+        artifact: 'docker-image'
+
+
+# ============================================================
+# STAGE 4 - SECURITY SCAN
+# ============================================================
+
+- stage: Security
+  displayName: 'Security Scan'
+
+  dependsOn: Docker
+
+  jobs:
+
+  - job: TrivyScan
+    displayName: 'Scan Docker Image'
+
+    steps:
+
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download Docker Image'
+      inputs:
+        buildType: 'current'
+        artifactName: 'docker-image'
+        targetPath: '$(Pipeline.Workspace)/docker-image'
+
+    - script: |
+        echo "Loading Docker image..."
+
+        docker load \
+          -i "$(Pipeline.Workspace)/docker-image/healthconnect-api.tar"
+
+        echo "Docker images:"
+        docker images
+
+        echo "Verifying image:"
+        docker image inspect healthconnect-api:latest
+      displayName: 'Load Docker Image'
+
+    - script: |
+        echo "Pulling Trivy image..."
+
+        docker pull aquasec/trivy:$(trivyVersion)
+
+        echo "Trivy version:"
+
+        docker run --rm \
+          aquasec/trivy:$(trivyVersion) \
+          --version
+      displayName: 'Prepare Trivy'
+
+    - script: |
+        echo "Scanning HealthConnect Docker image..."
+
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          aquasec/trivy:$(trivyVersion) \
+          image \
+          --severity HIGH,CRITICAL \
+          --exit-code 1 \
+          healthconnect-api:latest
+      displayName: 'Scan Docker Image'
+
+
+# ============================================================
+# STAGE 5 - PUSH IMAGE TO ACR
+# ============================================================
+
+- stage: PushImage
+  displayName: 'Push Image to Azure Container Registry'
+
+  dependsOn: Security
+
+  jobs:
+
+  - job: PushJob
+    displayName: 'Push Docker Image to ACR'
+
+    steps:
+
+    - checkout: self
+
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download Docker Image'
+      inputs:
+        buildType: 'current'
+        artifactName: 'docker-image'
+        targetPath: '$(Pipeline.Workspace)/docker-image'
+
+    - script: |
+        echo "Loading Docker image..."
+
+        docker load \
+          -i "$(Pipeline.Workspace)/docker-image/healthconnect-api.tar"
+
+        echo "Docker images:"
+        docker images
+
+        docker image inspect healthconnect-api:latest
+      displayName: 'Load Docker Image'
+
+    - task: AzureCLI@2
+      displayName: 'Login to Azure Container Registry'
+      inputs:
+        azureSubscription: '$(azureSubscription)'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+
+          echo "Logging into Azure..."
+
+          az account show
+
+          echo "Logging into ACR..."
+
+          az acr login \
+            --name "$(acrName)"
+
+    - script: |
+        echo "Tagging Docker image..."
+
+        docker tag \
+          healthconnect-api:latest \
+          $(acrLoginServer)/$(imageRepository):$(imageTag)
+
+        echo "Image:"
+        echo "$(acrLoginServer)/$(imageRepository):$(imageTag)"
+      displayName: 'Tag Image for ACR'
+
+    - script: |
+        echo "Pushing image to Azure Container Registry..."
+
+        docker push \
+          $(acrLoginServer)/$(imageRepository):$(imageTag)
+
+        echo "Image successfully pushed."
+      displayName: 'Push Image to ACR'
+
+
+# ============================================================
+# STAGE 6 - DEPLOY TO AKS USING HELM
+# ============================================================
+
+- stage: Deploy
+  displayName: 'Deploy to AKS using Helm'
+
+  dependsOn: PushImage
+
+  jobs:
+
+  - deployment: DeployAKS
+    displayName: 'Deploy HealthConnect to AKS'
+
+    environment: 'healthconnect-aks'
+
+    strategy:
+
+      runOnce:
+
+        deploy:
+
+          steps:
+
+          - checkout: self
+
+          - task: AzureCLI@2
+            displayName: 'Get AKS Credentials'
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+
+                echo "Azure subscription:"
+                az account show
+
+                echo "Getting AKS credentials..."
+
+                az aks get-credentials \
+                  --resource-group "$(aksResourceGroup)" \
+                  --name "$(aksClusterName)" \
+                  --overwrite-existing
+
+                echo "AKS nodes:"
+
+                kubectl get nodes
+
+          - script: |
+              echo "Helm version:"
+              helm version
+
+              echo ""
+              echo "Helm chart:"
+              helm lint "$(helmChartPath)"
+            displayName: 'Validate Helm Chart'
+
+          - task: AzureCLI@2
+            displayName: 'Deploy Helm Release'
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+
+                echo "Deploying image:"
+                echo "$(acrLoginServer)/$(imageRepository):$(imageTag)"
+
+                helm upgrade --install "$(helmReleaseName)" \
+                  "$(helmChartPath)" \
+                  --namespace "$(kubernetesNamespace)" \
+                  --create-namespace \
+                  --set image.repository="$(acrLoginServer)/$(imageRepository)" \
+                  --set image.tag="$(imageTag)"
+
+                echo ""
+                echo "Helm releases:"
+
+                helm list \
+                  --namespace "$(kubernetesNamespace)"
+
+          - task: AzureCLI@2
+            displayName: 'Verify AKS Rollout'
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+
+                echo "Waiting for deployment rollout..."
+
+                kubectl rollout status \
+                  deployment/healthconnect-api \
+                  --namespace "$(kubernetesNamespace)" \
+                  --timeout=5m
+
+                echo ""
+                echo "Pods:"
+
+                kubectl get pods \
+                  --namespace "$(kubernetesNamespace)"
+
+                echo ""
+                echo "Services:"
+
+                kubectl get svc \
+                  --namespace "$(kubernetesNamespace)"
+
+
+# ============================================================
+# STAGE 7 - APPLICATION HEALTH CHECK
+# ============================================================
+
+- stage: Verify
+  displayName: 'Verify Application Health'
+
+  dependsOn: Deploy
+
+  jobs:
+
+  - job: HealthCheck
+    displayName: 'Health Check'
+
+    steps:
+
+    - task: AzureCLI@2
+      displayName: 'Run Health Check'
+      inputs:
+        azureSubscription: '$(azureSubscription)'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+
+          echo "Getting AKS credentials..."
+
+          az aks get-credentials \
+            --resource-group "$(aksResourceGroup)" \
+            --name "$(aksClusterName)" \
+            --overwrite-existing
+
+          echo ""
+          echo "Deployment status:"
+
+          kubectl get deployment healthconnect-api \
+            --namespace "$(kubernetesNamespace)"
+
+          echo ""
+          echo "Pod status:"
+
+          kubectl get pods \
+            --namespace "$(kubernetesNamespace)"
+
+          echo ""
+          echo "Running application health check..."
+
+          kubectl run pipeline-health-check \
+            --rm \
+            -i \
+            --restart=Never \
+            --image=curlimages/curl \
+            -- \
+            curl -f \
+            http://healthconnect-api.$(kubernetesNamespace).svc.cluster.local/actuator/health
+
+          echo ""
+          echo "Health check completed successfully."
